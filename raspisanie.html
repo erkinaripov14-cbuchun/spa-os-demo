@@ -1,0 +1,1546 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>DeerSpa Расписание</title>
+<style>
+  /* Layout concept: a fixed dark sidebar (desktop) / off-canvas drawer
+     (mobile) lists sections — Расписание, Месяц, Клиенты, Мастера, Услуги,
+     Склад, Зарплата, Статистика — mirroring a real salon-ERP menu. Day view
+     covers the full 24h so any master can be booked at any hour, with a
+     Сетка/Список toggle: the grid (per master, per time slot) or a single
+     flat agenda listing every booking's time, client and service. Inventory
+     stock is never a running counter — it's the live sum of its stock_moves
+     log, so concurrent receive/consume entries can never double-count.
+     Payment is tracked (status/method/link), never actually processed —
+     there is no real card rail behind this page. */
+  :root{
+    --bg:#F3EFE8; --surface:#FFFFFF; --surface-2:#FBF8F3; --border:#E2D9CC;
+    --text:#281E1A; --text-dim:#6B5D53; --accent:#9C6F42; --accent-contrast:#FFFFFF;
+    --accent-soft:#EFE1D0; --danger:#AE4A30; --danger-soft:#F3DCD3; --grid-line:#EAE1D3;
+    --ok:#5E8C62; --ok-soft:#DEE9DC; --today:#C97A3B; --shadow:0 10px 30px -12px rgba(40,30,26,.25);
+    --radius-s:8px; --radius-m:14px; --radius-l:20px;
+    --sidebar-bg:#17110D; --sidebar-fg:#EDE4DC; --sidebar-dim:#B6A89C; --sidebar-active:#2A211A;
+    --font-display:"Fraunces",Georgia,"Times New Roman",serif;
+    --font-ui:"Manrope",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    color-scheme:light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#1B1613; --surface:#241C18; --surface-2:#2A211C; --border:#3A2E27;
+      --text:#EEE4DB; --text-dim:#B6A89C; --accent:#D8A869; --accent-contrast:#231A14;
+      --accent-soft:#3A2C1E; --danger:#E0876A; --danger-soft:#3C241D; --grid-line:#332821;
+      --ok:#7FAE83; --ok-soft:#28362A; --today:#E3984F; --shadow:0 10px 30px -12px rgba(0,0,0,.5);
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#1B1613; --surface:#241C18; --surface-2:#2A211C; --border:#3A2E27;
+    --text:#EEE4DB; --text-dim:#B6A89C; --accent:#D8A869; --accent-contrast:#231A14;
+    --accent-soft:#3A2C1E; --danger:#E0876A; --danger-soft:#3C241D; --grid-line:#332821;
+    --ok:#7FAE83; --ok-soft:#28362A; --today:#E3984F; --shadow:0 10px 30px -12px rgba(0,0,0,.5);
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box;}
+  body{background:var(--bg); color:var(--text); font-family:var(--font-ui);}
+  h1,h2,h3{font-family:var(--font-display); margin:0; font-weight:700;}
+  button{font-family:inherit;}
+
+  /* ---------- sidebar ---------- */
+  .scrim{position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:55;}
+  @media (min-width:900px){ .scrim{display:none!important;} }
+  .sidebar{
+    position:fixed; top:0; left:0; bottom:0; width:240px; background:var(--sidebar-bg); color:var(--sidebar-fg);
+    padding-top:max(20px, env(safe-area-inset-top,0px)); padding-bottom:20px;
+    padding-left:max(0px, env(safe-area-inset-left,0px));
+    transform:translateX(-100%); transition:transform .25s ease; z-index:60; overflow-y:auto;
+    display:flex; flex-direction:column;
+  }
+  .sidebar.open{transform:translateX(0);}
+  @media (min-width:900px){ .sidebar{transform:translateX(0);} }
+  .sidebar-brand{padding:0 20px 18px; display:flex; align-items:center; gap:10px;}
+  .sidebar-brand .logo{width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,#D8A869,#9C6F42); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-weight:700; color:#17110D; flex:none;}
+  .sidebar-brand h1{font-size:17px; color:#F4EDE4;}
+  .sidebar-brand span{font-size:11px; color:var(--sidebar-dim); display:block;}
+  .sidebar-nav{display:flex; flex-direction:column; padding:6px 10px; gap:2px;}
+  .sidebar-group-label{padding:16px 12px 6px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:#7A6D62;}
+  .sidebar-group-label:first-child{padding-top:4px;}
+  .sidebar-link{display:flex; align-items:center; gap:11px; padding:11px 12px; border-radius:10px; color:var(--sidebar-dim); font-size:13.5px; font-weight:600; cursor:pointer; border:none; background:transparent; text-align:left; width:100%;}
+  .sidebar-link:hover{background:rgba(255,255,255,.06);}
+  .sidebar-link.active{background:var(--sidebar-active); color:#F4EDE4;}
+  .sidebar-link .ic{width:7px; height:7px; border-radius:50%; background:currentColor; opacity:.5; flex:none;}
+  .sidebar-link.active .ic{background:#D8A869; opacity:1;}
+  .sidebar-footer{margin-top:auto; padding:14px 20px 4px; font-size:11px; color:#8B7E72; border-top:1px solid rgba(255,255,255,.08);}
+
+  .app-main{min-height:100vh;}
+  @media (min-width:900px){ .app-main{margin-left:240px;} }
+  .wrap{
+    max-width:1100px; margin:0 auto; padding-bottom:28px;
+    padding-left:max(16px, env(safe-area-inset-left,0px));
+    padding-right:max(16px, env(safe-area-inset-right,0px));
+  }
+
+  .mobile-topbar{display:flex; align-items:center; justify-content:space-between; gap:10px; padding-block:14px;}
+  @media (min-width:900px){ .mobile-topbar{display:none;} }
+  .hamburger{width:40px; height:40px; border-radius:10px; border:1px solid var(--border); background:var(--surface); display:flex; align-items:center; justify-content:center; font-size:18px; cursor:pointer; flex:none;}
+
+  .topbar{display:flex; align-items:center; justify-content:space-between; gap:16px; padding-block:18px 14px; flex-wrap:wrap;}
+  .brand{display:flex; align-items:baseline; gap:10px;}
+  .brand h1{font-size:21px; letter-spacing:.01em;}
+  .brand span{color:var(--text-dim); font-size:13px;}
+  .topbar-actions{display:flex; gap:8px; flex-wrap:wrap;}
+
+  .btn{border:1px solid var(--border); background:var(--surface); color:var(--text); border-radius:999px; padding:9px 16px; font-size:13.5px; font-weight:600; cursor:pointer; display:inline-flex; align-items:center; gap:6px; transition:transform .1s, background .15s; white-space:nowrap;}
+  .btn:hover{background:var(--surface-2);}
+  .btn:active{transform:scale(.97);}
+  .btn-primary{background:var(--accent); color:var(--accent-contrast); border-color:transparent;}
+  .btn-primary:hover{filter:brightness(1.05); background:var(--accent);}
+  .btn-ghost{background:transparent; border-color:transparent; color:var(--text-dim); padding:9px 10px;}
+  .btn-danger{background:var(--danger-soft); color:var(--danger); border-color:transparent;}
+  .btn-icon{width:36px; height:36px; padding:0; justify-content:center; border-radius:50%;}
+  .btn-sm{padding:6px 12px; font-size:12.5px;}
+
+  .section{display:none;}
+  .section.active{display:block;}
+
+  .datebar{display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:6px; }
+  .datebar .label{font-weight:700; font-size:14px; min-width:190px; text-align:center;}
+  .datebar .label .dow{display:block; font-weight:500; color:var(--text-dim); font-size:11.5px; text-transform:uppercase; letter-spacing:.06em;}
+  .date-pick{position:relative;}
+  .date-pick input[type=date]{position:absolute; opacity:0; width:36px; height:36px; cursor:pointer; top:0; left:0;}
+
+  .toolrow{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:10px;}
+  .mode-toggle{display:flex; gap:6px; margin-left:auto;}
+
+  .empty{background:var(--surface); border:1px dashed var(--border); border-radius:var(--radius-l); padding:40px 24px; text-align:center; color:var(--text-dim); margin:20px 0;}
+  .empty h3{color:var(--text); font-size:18px; margin-bottom:8px;}
+  .empty p{margin:0 0 16px; font-size:14px; line-height:1.5;}
+
+  .schedule{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-l); box-shadow:var(--shadow); overflow:hidden; margin-top:6px;}
+  .schedule-scroll{overflow:auto; max-height:64vh;}
+  .grid{display:flex; min-width:max-content;}
+  .time-col{position:sticky; left:0; z-index:3; background:var(--surface); border-right:1px solid var(--border); width:58px; flex:none;}
+  .time-col .head-cell{height:64px; border-bottom:1px solid var(--border);}
+  .time-slot{height:28px; font-size:11px; color:var(--text-dim); text-align:right; padding-right:8px; position:relative; font-variant-numeric:tabular-nums;}
+  .time-slot.hour::after{content:attr(data-h); position:relative; top:-6px;}
+  .time-slot:not(.hour)::after{content:"";}
+
+  .staff-col{width:196px; flex:none; border-right:1px solid var(--grid-line); position:relative;}
+  .staff-col:last-child{border-right:none;}
+  .head-cell{height:64px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; border-bottom:1px solid var(--border); background:var(--surface-2); position:sticky; top:0; z-index:2; padding:0 8px; text-align:center;}
+  .head-cell .dot{width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:6px;}
+  .head-cell .name{font-weight:700; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:170px;}
+  .head-cell .count{font-size:11px; color:var(--text-dim);}
+
+  .col-body{position:relative; background-image:repeating-linear-gradient(to bottom, var(--grid-line) 0, var(--grid-line) 1px, transparent 1px, transparent 28px); cursor:pointer;}
+  .col-body .hour-line{position:absolute; left:0; right:0; border-top:1px solid var(--border); pointer-events:none;}
+  .now-line{position:absolute; left:0; right:0; height:0; border-top:2px solid var(--today); z-index:4; pointer-events:none;}
+  .now-line::before{content:""; position:absolute; left:-4px; top:-4px; width:8px; height:8px; border-radius:50%; background:var(--today);}
+
+  .booking{position:absolute; left:3px; right:3px; border-radius:10px; padding:6px 8px; overflow:hidden; color:#fff; cursor:pointer; box-shadow:0 2px 6px rgba(0,0,0,.18); border:1px solid rgba(255,255,255,.25);}
+  .booking:hover{filter:brightness(1.06);}
+  .booking .client{font-weight:700; font-size:12.5px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .booking .svc{font-size:11px; opacity:.92; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .booking .time{font-size:10.5px; opacity:.85;}
+  .booking.status-completed{background:var(--ok)!important;}
+  .booking.status-no_show{background:var(--danger)!important;}
+  .booking.status-cancelled{opacity:.5; filter:saturate(.5);}
+  .booking.status-cancelled .client{text-decoration:line-through;}
+
+  .monthnav{display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:6px; width:fit-content;}
+  .monthnav .label{font-weight:700; font-size:14px; min-width:160px; text-align:center;}
+  .calendar{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-l); box-shadow:var(--shadow); margin-top:12px; padding:14px; overflow-x:auto;}
+  .cal-grid{display:grid; grid-template-columns:repeat(7,minmax(96px,1fr)); gap:6px; min-width:680px;}
+  .cal-dow{font-size:11.5px; font-weight:700; color:var(--text-dim); text-align:center; padding-bottom:4px; text-transform:uppercase; letter-spacing:.04em;}
+  .cal-cell{border:1px solid var(--grid-line); border-radius:var(--radius-s); min-height:76px; padding:8px; cursor:pointer; display:flex; flex-direction:column; gap:6px; background:var(--surface-2);}
+  .cal-cell:hover{background:var(--accent-soft);}
+  .cal-cell.blank{visibility:hidden; cursor:default;}
+  .cal-cell.today{border-color:var(--today); border-width:2px;}
+  .cal-cell .daynum{font-weight:700; font-size:13px;}
+  .cal-cell .pill{align-self:flex-start; background:var(--accent-soft); color:var(--accent); font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px;}
+
+  .search-row{display:flex; gap:10px; margin-bottom:14px;}
+  .search-row input{flex:1; border:1px solid var(--border); background:var(--surface); color:var(--text); border-radius:999px; padding:10px 16px; font-size:14px; font-family:inherit;}
+  .client-list{display:flex; flex-direction:column; gap:8px;}
+  .client-row{display:flex; align-items:center; gap:12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-m); padding:12px 14px; cursor:pointer;}
+  .client-row:hover{background:var(--surface-2);}
+  .client-row .avatar{width:38px; height:38px; border-radius:50%; background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-weight:800; font-size:14px; flex:none;}
+  .client-row .meta{flex:1; min-width:0;}
+  .client-row .meta .n{font-weight:700; font-size:14.5px;}
+  .client-row .meta .p{font-size:12.5px; color:var(--text-dim); font-variant-numeric:tabular-nums;}
+  .client-row .chev{color:var(--text-dim);}
+
+  .stat-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px;}
+  .stat-tile{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-m); padding:16px; box-shadow:var(--shadow);}
+  .stat-tile .v{font-family:var(--font-display); font-size:26px; font-weight:700; font-variant-numeric:tabular-nums;}
+  .stat-tile .l{font-size:12.5px; color:var(--text-dim); margin-top:4px;}
+  .rank-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-m); padding:16px; margin-bottom:12px;}
+  .rank-card h3{font-size:14.5px; margin-bottom:12px; font-family:var(--font-ui); font-weight:800;}
+  .rank-row{display:flex; align-items:center; gap:10px; margin-bottom:9px; font-size:13px;}
+  .rank-row .rn{width:110px; flex:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--text-dim);}
+  .rank-row .bar-track{flex:1; background:var(--grid-line); border-radius:999px; height:10px; overflow:hidden;}
+  .rank-row .bar-fill{height:100%; background:var(--accent); border-radius:999px;}
+  .rank-row .rv{width:40px; text-align:right; flex:none; font-variant-numeric:tabular-nums; font-weight:700;}
+
+  .stock-row{display:flex; align-items:center; gap:10px; padding:10px; border:1px solid var(--border); border-radius:var(--radius-m); margin-bottom:8px; background:var(--surface-2); flex-wrap:wrap;}
+  .stock-row .meta{flex:1; min-width:140px;}
+  .stock-row .meta .n{font-weight:700; font-size:14px;}
+  .stock-row .meta .d{font-size:12px; color:var(--text-dim);}
+  .stock-badge{font-size:12px; font-weight:800; padding:4px 11px; border-radius:999px; background:var(--ok-soft); color:var(--ok); white-space:nowrap;}
+  .stock-badge.low{background:var(--danger-soft); color:var(--danger);}
+  .stock-actions{display:flex; gap:6px; flex-wrap:wrap;}
+
+  .range-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
+  .range-row input[type=date]{border:1px solid var(--border); background:var(--surface); color:var(--text); border-radius:999px; padding:9px 14px; font-size:13.5px; font-family:inherit;}
+  .payroll-table{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-l); box-shadow:var(--shadow); overflow:hidden;}
+  .payroll-row{display:flex; align-items:center; gap:10px; padding:13px 16px; border-bottom:1px solid var(--grid-line); flex-wrap:wrap;}
+  .payroll-row:last-child{border-bottom:none;}
+  .payroll-row.total{background:var(--surface-2); font-weight:800;}
+  .payroll-row .dot{width:10px; height:10px; border-radius:50%; flex:none;}
+  .payroll-row .pname{flex:1; min-width:120px; font-weight:700;}
+  .payroll-row .pcount{width:80px; color:var(--text-dim); font-size:12.5px; text-align:right;}
+  .payroll-row .prevenue{width:110px; text-align:right; font-variant-numeric:tabular-nums;}
+  .payroll-row .pcommission{width:110px; text-align:right; font-variant-numeric:tabular-nums; font-weight:800; color:var(--accent);}
+
+  .overlay{position:fixed; inset:0; background:rgba(20,14,10,.45); display:flex; align-items:flex-end; justify-content:center; z-index:70; padding:0;}
+  @media (min-width:640px){ .overlay{align-items:center; padding:24px;} }
+  .modal{background:var(--surface); width:100%; max-width:480px; border-radius:20px 20px 0 0; max-height:92vh; overflow-y:auto; padding:22px 20px 26px; box-shadow:var(--shadow);}
+  @media (min-width:640px){ .modal{border-radius:var(--radius-l);} }
+  .modal h2{font-size:19px; margin-bottom:4px;}
+  .modal .sub{color:var(--text-dim); font-size:13px; margin-bottom:18px;}
+  .field{margin-bottom:14px;}
+  .field label{display:block; font-size:12.5px; font-weight:700; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:.03em;}
+  .field input[type=text], .field input[type=tel], .field input[type=time], .field input[type=number], .field select, .field textarea{
+    width:100%; border:1px solid var(--border); background:var(--surface-2); color:var(--text); border-radius:var(--radius-s); padding:10px 12px; font-size:14.5px; font-family:inherit;
+  }
+  .field textarea{resize:vertical; min-height:60px;}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .row3{display:grid; grid-template-columns:repeat(2,1fr); gap:8px;}
+  .swatches{display:flex; gap:8px; flex-wrap:wrap;}
+  .swatch{width:26px; height:26px; border-radius:50%; cursor:pointer; border:2px solid transparent;}
+  .swatch.active{border-color:var(--text);}
+  .status-pills{display:flex; gap:6px; flex-wrap:wrap;}
+  .status-pill{border:1px solid var(--border); background:var(--surface-2); border-radius:999px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; color:var(--text-dim);}
+  .status-pill.active[data-status="scheduled"]{background:var(--accent-soft); color:var(--accent); border-color:transparent;}
+  .status-pill.active[data-status="completed"]{background:var(--ok-soft); color:var(--ok); border-color:transparent;}
+  .status-pill.active[data-status="cancelled"]{background:var(--border); color:var(--text); border-color:transparent;}
+  .status-pill.active[data-status="no_show"]{background:var(--danger-soft); color:var(--danger); border-color:transparent;}
+  .status-pill.active[data-pay="unpaid"]{background:var(--danger-soft); color:var(--danger); border-color:transparent;}
+  .status-pill.active[data-pay="paid"]{background:var(--ok-soft); color:var(--ok); border-color:transparent;}
+  .status-pill.active[data-daymode]{background:var(--text); color:var(--bg); border-color:transparent;}
+  .status-pill.active[data-hstatus="booked"]{background:var(--accent-soft); color:var(--accent); border-color:transparent;}
+  .status-pill.active[data-hstatus="checked_in"]{background:var(--ok-soft); color:var(--ok); border-color:transparent;}
+  .status-pill.active[data-hstatus="checked_out"]{background:var(--border); color:var(--text); border-color:transparent;}
+  .status-pill.active[data-hstatus="cancelled"]{background:var(--danger-soft); color:var(--danger); border-color:transparent;}
+  .modal-actions{display:flex; gap:10px; margin-top:20px;}
+  .modal-actions .btn{flex:1; justify-content:center;}
+  .close-x{position:absolute; top:14px; right:14px;}
+  .modal-head{position:relative;}
+  .confirm-row{display:flex; gap:8px; align-items:center; margin-top:10px; background:var(--danger-soft); padding:10px; border-radius:var(--radius-s);}
+  .confirm-row span{flex:1; font-size:13px; color:var(--danger);}
+
+  .list-item{display:flex; align-items:center; gap:10px; padding:10px; border:1px solid var(--border); border-radius:var(--radius-m); margin-bottom:8px; background:var(--surface-2); flex-wrap:wrap;}
+  .list-item .dot{width:12px; height:12px; border-radius:50%; flex:none;}
+  .list-item .meta{flex:1; min-width:120px;}
+  .list-item .meta .n{font-weight:700; font-size:14px;}
+  .list-item .meta .d{font-size:12px; color:var(--text-dim);}
+  .list-item .commission-input{width:58px; border:1px solid var(--border); border-radius:8px; padding:6px; background:var(--surface); color:var(--text); font-size:13px;}
+  .add-form{border:1px dashed var(--border); border-radius:var(--radius-m); padding:14px; margin-top:12px; background:var(--surface);}
+
+  .history-row{display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--grid-line); font-size:13px;}
+  .history-row:last-child{border-bottom:none;}
+  .history-row .dot{width:8px; height:8px; border-radius:50%; flex:none;}
+  .history-row .hmeta{flex:1; min-width:0;}
+  .history-row .hsvc{font-weight:700;}
+  .history-row .hdate{color:var(--text-dim); font-size:11.5px;}
+  .history-row .hprice{font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap;}
+
+  .toast{position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--text); color:var(--bg); padding:10px 18px; border-radius:999px; font-size:13.5px; z-index:80; box-shadow:var(--shadow); opacity:0; transition:opacity .25s, transform .25s; pointer-events:none;}
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(-6px);}
+
+  .hint{font-size:12px; color:var(--text-dim); margin-top:10px; text-align:center;}
+  [hidden]{display:none!important;}
+</style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700&family=Manrope:wght@500;600;700;800&display=swap">
+
+<div class="scrim" id="scrim" hidden></div>
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-brand"><div class="logo">D</div><div><h1>DeerSpa</h1><span>управление салоном</span></div></div>
+  <div class="sidebar-nav" id="sidebarNav">
+    <div class="sidebar-group-label">Спа и Красота</div>
+    <button class="sidebar-link active" data-view="day"><span class="ic"></span>Расписание</button>
+    <button class="sidebar-link" data-view="month"><span class="ic"></span>Месяц</button>
+    <button class="sidebar-link" data-view="clients"><span class="ic"></span>Клиенты</button>
+    <button class="sidebar-link" data-view="staff"><span class="ic"></span>Мастера</button>
+    <button class="sidebar-link" data-view="services"><span class="ic"></span>Услуги</button>
+    <button class="sidebar-link" data-view="inventory"><span class="ic"></span>Склад</button>
+    <button class="sidebar-link" data-view="payroll"><span class="ic"></span>Зарплата</button>
+    <button class="sidebar-link" data-view="stats"><span class="ic"></span>Статистика</button>
+    <div class="sidebar-group-label">Отель</div>
+    <button class="sidebar-link" data-view="hotelBookings"><span class="ic"></span>Бронирования</button>
+    <button class="sidebar-link" data-view="rooms"><span class="ic"></span>Номера</button>
+  </div>
+  <div class="sidebar-footer"><a href="./" style="color:#D8A869;text-decoration:none;display:block;margin-bottom:8px">← SPA OS панель</a><button class="sidebar-link" style="padding:6px 0" onclick="window.spaosExport&&spaosExport()">⬇ Захира (backup)</button><label class="sidebar-link" style="padding:6px 0;cursor:pointer">⬆ Тиклаш<input type="file" accept=".json" hidden onchange="window.spaosImport&&spaosImport(this.files[0])"></label>Deer Spa · deerspatashkent.com</div>
+</nav>
+
+<div class="app-main">
+  <div class="wrap">
+    <div class="mobile-topbar">
+      <button class="hamburger" id="btnHamburger">☰</button>
+      <h1 style="font-size:17px;">DeerSpa</h1>
+      <button class="btn btn-primary btn-sm" id="btnAddMobile">+ Запись</button>
+    </div>
+    <div class="topbar">
+      <div class="brand"><h1 id="sectionTitle">Расписание</h1><span id="sectionSubtitle">день, мастера, время</span></div>
+      <div class="topbar-actions"><button class="btn btn-primary" id="btnAdd">+ Запись</button></div>
+    </div>
+
+    <!-- DAY -->
+    <div class="section active" id="viewDay">
+      <div class="toolrow">
+        <div class="datebar">
+          <button class="btn btn-icon btn-ghost" id="btnPrev" aria-label="Предыдущий день">←</button>
+          <div class="label" id="dateLabel"><span class="dow">—</span>—</div>
+          <button class="btn btn-icon btn-ghost" id="btnNext" aria-label="Следующий день">→</button>
+          <div class="date-pick">
+            <button class="btn btn-icon btn-ghost" aria-label="Выбрать дату">📅</button>
+            <input type="date" id="datePick">
+          </div>
+        </div>
+        <button class="btn" id="btnToday">Сегодня</button>
+        <div class="status-pills mode-toggle" id="dayModePills">
+          <button type="button" class="status-pill active" data-daymode="grid">Сетка</button>
+          <button type="button" class="status-pill" data-daymode="list">Список</button>
+        </div>
+      </div>
+
+      <div id="emptyStaff" class="empty" hidden>
+        <h3>Пока нет мастеров</h3>
+        <p>Добавьте хотя бы одного мастера, чтобы начать планировать записи на день.</p>
+        <button class="btn btn-primary" id="btnAddStaffEmpty">+ Добавить мастера</button>
+      </div>
+
+      <div id="scheduleShell" class="schedule" hidden>
+        <div class="schedule-scroll"><div class="grid" id="grid"></div></div>
+      </div>
+      <div id="dayAgenda" hidden></div>
+      <div class="hint" id="loadingHint">Загрузка…</div>
+    </div>
+
+    <!-- MONTH -->
+    <div class="section" id="viewMonth">
+      <div class="monthnav">
+        <button class="btn btn-icon btn-ghost" id="btnMonthPrev">←</button>
+        <div class="label" id="monthLabel">—</div>
+        <button class="btn btn-icon btn-ghost" id="btnMonthNext">→</button>
+      </div>
+      <div class="calendar"><div class="cal-grid" id="calGrid"></div></div>
+    </div>
+
+    <!-- CLIENTS -->
+    <div class="section" id="viewClients">
+      <div class="search-row">
+        <input type="text" id="clientSearch" placeholder="Поиск по имени или телефону">
+        <button class="btn btn-primary" id="btnAddClient">+ Клиент</button>
+      </div>
+      <div class="client-list" id="clientList"></div>
+      <div class="empty" id="emptyClients" hidden>
+        <h3>Клиентов пока нет</h3>
+        <p>Клиенты появятся здесь автоматически, когда вы создадите запись с номером телефона — либо добавьте клиента вручную.</p>
+      </div>
+    </div>
+
+    <!-- STAFF -->
+    <div class="section" id="viewStaff">
+      <div id="tabStaff"></div>
+    </div>
+
+    <!-- SERVICES -->
+    <div class="section" id="viewServices">
+      <div id="tabServices"></div>
+    </div>
+
+    <!-- INVENTORY -->
+    <div class="section" id="viewInventory">
+      <div class="toolrow">
+        <div class="hint" style="margin:0; text-align:left;">Остаток считается по журналу прихода/расхода — цифры не теряются даже при одновременном редактировании.</div>
+        <button class="btn btn-primary" id="btnAddInventory">+ Позиция</button>
+      </div>
+      <div class="add-form" id="inventoryAddForm" hidden>
+        <div class="field"><label>Название</label><input type="text" id="newInvName" placeholder="Например, Масло для массажа"></div>
+        <div class="row2">
+          <div class="field"><label>Единица</label><input type="text" id="newInvUnit" placeholder="мл, шт, кг" value="шт"></div>
+          <div class="field"><label>Мин. остаток для напоминания</label><input type="number" id="newInvReorder" min="0" value="5"></div>
+        </div>
+        <button class="btn btn-primary" id="btnSaveInventory" style="width:100%;justify-content:center;">Добавить позицию</button>
+      </div>
+      <div id="inventoryList"></div>
+      <div class="empty" id="emptyInventory" hidden>
+        <h3>Склад пуст</h3>
+        <p>Добавьте расходные материалы (масла, полотенца, одноразовые комплекты), чтобы видеть остатки и вовремя закупать.</p>
+      </div>
+    </div>
+
+    <!-- PAYROLL -->
+    <div class="section" id="viewPayroll">
+      <div class="range-row">
+        <input type="date" id="payrollFrom"> — <input type="date" id="payrollTo">
+        <button class="btn btn-sm" id="btnPayrollMonth">Этот месяц</button>
+      </div>
+      <div class="payroll-table" id="payrollTable"></div>
+      <div class="hint">Комиссия считается от выручки завершённых записей за период, по проценту, указанному у мастера.</div>
+    </div>
+
+    <!-- STATS -->
+    <div class="section" id="viewStats">
+      <div class="stat-grid" id="statTiles"></div>
+      <div class="rank-card"><h3>Топ услуг в этом месяце</h3><div id="rankServices"></div></div>
+      <div class="rank-card"><h3>Загрузка мастеров в этом месяце</h3><div id="rankStaff"></div></div>
+      <div class="rank-card"><h3>Способы оплаты в этом месяце</h3><div id="rankPayments"></div></div>
+      <div class="hint">Выручка и топы считаются по записям со статусом «Завершена».</div>
+    </div>
+
+    <!-- HOTEL BOOKINGS -->
+    <div class="section" id="viewHotelBookings">
+      <div class="toolrow">
+        <div class="hint" style="margin:0; text-align:left;">Заезды и выезды гостей отеля — отдельно от записей спа.</div>
+      </div>
+      <div id="hotelBookingList"></div>
+      <div class="empty" id="emptyHotelBookings" hidden>
+        <h3>Бронирований пока нет</h3>
+        <p>Нажмите «+ Запись», чтобы добавить первое бронирование номера.</p>
+      </div>
+    </div>
+
+    <!-- ROOMS -->
+    <div class="section" id="viewRooms">
+      <div id="tabRooms"></div>
+    </div>
+  </div>
+</div>
+
+<!-- booking modal -->
+<div class="overlay" id="overlayBooking" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="bookingModalTitle">Новая запись</h2>
+      <div class="sub" id="bookingModalSub">Заполните данные клиента</div>
+      <button class="btn btn-icon btn-ghost close-x" data-close>✕</button>
+    </div>
+    <div class="field">
+      <label>Статус</label>
+      <div class="status-pills" id="statusPills">
+        <button type="button" class="status-pill" data-status="scheduled">Запланирована</button>
+        <button type="button" class="status-pill" data-status="completed">Завершена</button>
+        <button type="button" class="status-pill" data-status="cancelled">Отменена</button>
+        <button type="button" class="status-pill" data-status="no_show">Не пришёл</button>
+      </div>
+    </div>
+    <div class="field"><label>Клиент</label><input type="text" id="fClient" placeholder="Имя клиента"></div>
+    <div class="field"><label>Телефон</label><input type="tel" id="fPhone" placeholder="+998 90 123 45 67"></div>
+    <div class="row2">
+      <div class="field"><label>Мастер</label><select id="fStaff"></select></div>
+      <div class="field"><label>Услуга</label><select id="fService"></select></div>
+    </div>
+    <div class="row3">
+      <div class="field"><label>Начало</label><input type="time" id="fStart" step="300"></div>
+      <div class="field"><label>Длительность, мин</label><input type="number" id="fDuration" min="5" step="5"></div>
+    </div>
+    <div class="field"><label>Цена, сум</label><input type="number" id="fPrice" min="0" step="1000"></div>
+    <div class="field">
+      <label>Оплата</label>
+      <div class="status-pills" id="paymentPills">
+        <button type="button" class="status-pill" data-pay="unpaid">Не оплачено</button>
+        <button type="button" class="status-pill" data-pay="paid">Оплачено</button>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Способ оплаты</label>
+        <select id="fPayMethod">
+          <option value="cash">Наличные</option>
+          <option value="card">Карта (терминал)</option>
+          <option value="payme">Payme</option>
+          <option value="click">Click</option>
+          <option value="uzcard">Перевод Uzcard/Humo</option>
+          <option value="other">Другое</option>
+        </select>
+      </div>
+      <div class="field"><label>Ссылка на оплату</label><input type="text" id="fPayLink" placeholder="Если создана в Payme/Click"></div>
+    </div>
+    <div class="field"><label>Заметка</label><textarea id="fNotes" placeholder="Необязательно"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="btnDeleteBooking" hidden>Удалить</button>
+      <button class="btn btn-primary" id="btnSaveBooking">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- client modal -->
+<div class="overlay" id="overlayClient" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="clientModalTitle">Клиент</h2>
+      <div class="sub">Карточка клиента и история визитов</div>
+      <button class="btn btn-icon btn-ghost close-x" data-close>✕</button>
+    </div>
+    <div class="field"><label>Имя</label><input type="text" id="cfName" placeholder="Имя клиента"></div>
+    <div class="field"><label>Телефон</label><input type="tel" id="cfPhone" placeholder="+998 90 123 45 67"></div>
+    <div class="field"><label>Заметка</label><textarea id="cfNotes" placeholder="Предпочтения, аллергии, пожелания"></textarea></div>
+    <div class="stat-grid" id="clientStats" style="margin-bottom:10px;"></div>
+    <div id="clientHistory"></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="btnDeleteClient">Удалить</button>
+      <button class="btn btn-primary" id="btnSaveClient">Сохранить</button>
+    </div>
+    <div class="confirm-row" id="clientDeleteConfirm" hidden>
+      <span>Удалить клиента без возможности восстановить?</span>
+      <button class="btn btn-sm" data-cancel-delete>Отмена</button>
+      <button class="btn btn-sm btn-danger" id="btnConfirmDeleteClient">Удалить</button>
+    </div>
+  </div>
+</div>
+
+<!-- stock move modal -->
+<div class="overlay" id="overlayStockMove" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="stockMoveTitle">Приход</h2>
+      <div class="sub" id="stockMoveSub">—</div>
+      <button class="btn btn-icon btn-ghost close-x" data-close>✕</button>
+    </div>
+    <div class="field"><label>Количество</label><input type="number" id="smQty" min="0.01" step="0.01"></div>
+    <div class="field"><label>Комментарий</label><input type="text" id="smReason" placeholder="Например, закупка у поставщика"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="btnSaveStockMove" style="width:100%;justify-content:center;">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- hotel booking modal -->
+<div class="overlay" id="overlayHotelBooking" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="hotelModalTitle">Новое бронирование</h2>
+      <div class="sub" id="hotelModalSub">Номер отеля</div>
+      <button class="btn btn-icon btn-ghost close-x" data-close>✕</button>
+    </div>
+    <div class="field">
+      <label>Статус</label>
+      <div class="status-pills" id="hotelStatusPills">
+        <button type="button" class="status-pill" data-hstatus="booked">Забронирован</button>
+        <button type="button" class="status-pill" data-hstatus="checked_in">Заселён</button>
+        <button type="button" class="status-pill" data-hstatus="checked_out">Выехал</button>
+        <button type="button" class="status-pill" data-hstatus="cancelled">Отменено</button>
+      </div>
+    </div>
+    <div class="field"><label>Гость</label><input type="text" id="hClient" placeholder="Имя гостя"></div>
+    <div class="field"><label>Телефон</label><input type="tel" id="hPhone" placeholder="+998 90 123 45 67"></div>
+    <div class="field"><label>Номер</label><select id="hRoom"></select></div>
+    <div class="row2">
+      <div class="field"><label>Заезд</label><input type="date" id="hCheckIn"></div>
+      <div class="field"><label>Выезд</label><input type="date" id="hCheckOut"></div>
+    </div>
+    <div class="field"><label>Сумма, сум</label><input type="number" id="hPrice" min="0" step="10000"></div>
+    <div class="field">
+      <label>Оплата</label>
+      <div class="status-pills" id="hotelPaymentPills">
+        <button type="button" class="status-pill" data-pay="unpaid">Не оплачено</button>
+        <button type="button" class="status-pill" data-pay="paid">Оплачено</button>
+      </div>
+    </div>
+    <div class="field"><label>Заметка</label><textarea id="hNotes" placeholder="Необязательно"></textarea></div>
+    <div class="modal-actions">
+      <button class="btn btn-danger" id="btnDeleteHotelBooking" hidden>Удалить</button>
+      <button class="btn btn-primary" id="btnSaveHotelBooking">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="seed.js"></script>
+<script src="db-local.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  var WORK_START = 0, WORK_END = 24*60, SLOT = 30, ROW_PX = 28;
+  var PALETTE = ["#C2714F","#8A8F5C","#4F8A8B","#8B5A7C","#C9A227","#5B6B7A","#B9707A","#5E7A5E"];
+  var STATUS_LABELS = { scheduled:"Запланирована", completed:"Завершена", cancelled:"Отменена", no_show:"Не пришёл" };
+  var PAYMENT_LABELS = { cash:"Наличные", card:"Карта", payme:"Payme", click:"Click", uzcard:"Перевод", other:"Другое" };
+  var HOTEL_STATUS_LABELS = { booked:"Забронирован", checked_in:"Заселён", checked_out:"Выехал", cancelled:"Отменено" };
+  var SECTION_TITLES = {
+    day:["Расписание","день, мастера, время"], month:["Месяц","обзор записей по дням"],
+    clients:["Клиенты","база и история визитов"], staff:["Мастера","состав и комиссия"],
+    services:["Услуги","каталог и цены"], inventory:["Склад","расходные материалы"],
+    payroll:["Зарплата","комиссия мастеров за период"], stats:["Статистика","выручка и загрузка"],
+    hotelBookings:["Бронирования","заезды и выезды гостей"], rooms:["Номера","категории и цены"]
+  };
+
+  var state = {
+    date: new Date(), staff: [], services: [], bookings: [], dayMode: "grid",
+    editingBookingId: null, editingStatus: "scheduled", editingPaymentStatus: "unpaid",
+    monthDate: new Date(), monthBookings: [],
+    clients: [], clientSearch: "", editingClientId: null,
+    statsBookings: [],
+    inventoryItems: [], stockMoves: [], editingStockItem: null, stockDirection: "in",
+    payrollFrom: "", payrollTo: "", payrollBookings: [],
+    currentView: "day",
+    hotelRooms: [], hotelBookings: [],
+    editingHotelBookingId: null, editingHotelStatus: "booked", editingHotelPaymentStatus: "unpaid"
+  };
+  var db = null;
+  var unsub = { bookings:null, month:null, clients:null, stats:null, inventory:null, payroll:null, hotelBookings:null };
+
+  function pad(n){ return n<10 ? "0"+n : ""+n; }
+  function fmtDateKey(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
+  function sameDay(a,b){ return fmtDateKey(a)===fmtDateKey(b); }
+  function minToHHMM(m){ m=((m%1440)+1440)%1440; return pad(Math.floor(m/60))+":"+pad(m%60); }
+  function hhmmToMin(s){ var p=s.split(":"); return (+p[0])*60+(+p[1]); }
+  function escapeHtml(s){ return String(s==null?"":s).replace(/[&<>"']/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+  function fmtMoney(n){ return Math.round(n||0).toLocaleString("ru-RU"); }
+  function digitsOnly(s){ return String(s||"").replace(/\D/g,""); }
+
+  var DOW = ["Воскресенье","Понедельник","Вторник","Среда","Четверг","Пятница","Суббота"];
+  var DOW_SHORT = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"];
+  var MON = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+  var MON_NOM = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+
+  function toast(msg){
+    var t = document.getElementById("toast");
+    t.textContent = msg; t.classList.add("show");
+    clearTimeout(t._tm);
+    t._tm = setTimeout(function(){ t.classList.remove("show"); }, 2400);
+  }
+  function showOverlay(id){ document.getElementById(id).hidden = false; }
+  function hideOverlay(id){ document.getElementById(id).hidden = true; }
+  document.querySelectorAll("[data-close]").forEach(function(btn){
+    btn.addEventListener("click", function(){ btn.closest(".overlay").hidden = true; });
+  });
+  ["overlayBooking","overlayClient","overlayStockMove","overlayHotelBooking"].forEach(function(id){
+    document.getElementById(id).addEventListener("click", function(e){ if(e.target===e.currentTarget) e.currentTarget.hidden = true; });
+  });
+
+  // ================= SIDEBAR / NAVIGATION =================
+  function openSidebar(){ document.getElementById("sidebar").classList.add("open"); document.getElementById("scrim").hidden = false; }
+  function closeSidebar(){ document.getElementById("sidebar").classList.remove("open"); document.getElementById("scrim").hidden = true; }
+  document.getElementById("btnHamburger").addEventListener("click", openSidebar);
+  document.getElementById("scrim").addEventListener("click", closeSidebar);
+  document.querySelectorAll(".sidebar-link").forEach(function(link){
+    link.addEventListener("click", function(){ switchView(link.dataset.view); closeSidebar(); });
+  });
+  var VIEW_IDS = ["day","month","clients","staff","services","inventory","payroll","stats","hotelBookings","rooms"];
+  function switchView(view){
+    state.currentView = view;
+    document.querySelectorAll(".sidebar-link").forEach(function(t){ t.classList.toggle("active", t.dataset.view===view); });
+    VIEW_IDS.forEach(function(v){
+      var elId = "view" + v.charAt(0).toUpperCase() + v.slice(1);
+      document.getElementById(elId).classList.toggle("active", v===view);
+    });
+    var titles = SECTION_TITLES[view] || ["DeerSpa",""];
+    document.getElementById("sectionTitle").textContent = titles[0];
+    document.getElementById("sectionSubtitle").textContent = titles[1];
+
+    if(view==="month") subscribeMonth(); else if(unsub.month){ unsub.month(); unsub.month=null; }
+    if(view==="clients") subscribeClients(); else if(unsub.clients){ unsub.clients(); unsub.clients=null; }
+    if(view==="stats") subscribeStats(); else if(unsub.stats){ unsub.stats(); unsub.stats=null; }
+    if(view==="inventory") subscribeInventory(); else if(unsub.inventory){ unsub.inventory(); unsub.inventory=null; }
+    if(view==="payroll") subscribePayroll(); else if(unsub.payroll){ unsub.payroll(); unsub.payroll=null; }
+    if(view==="hotelBookings") subscribeHotelBookings(); else if(unsub.hotelBookings){ unsub.hotelBookings(); unsub.hotelBookings=null; }
+    if(view==="staff") renderStaffTab();
+    if(view==="services") renderServicesTab();
+    if(view==="rooms") renderRoomsTab();
+  }
+
+  // ================= DAY VIEW =================
+  function renderDateLabel(){
+    var d = state.date;
+    document.getElementById("dateLabel").innerHTML = '<span class="dow">'+DOW[d.getDay()]+'</span>'+d.getDate()+' '+MON[d.getMonth()]+' '+d.getFullYear();
+    document.getElementById("datePick").value = fmtDateKey(d);
+  }
+  document.getElementById("dayModePills").addEventListener("click", function(e){
+    var btn = e.target.closest(".status-pill"); if(!btn) return;
+    state.dayMode = btn.dataset.daymode;
+    document.querySelectorAll("#dayModePills .status-pill").forEach(function(p){ p.classList.toggle("active", p===btn); });
+    renderDayView();
+  });
+  function renderDayView(){
+    if(state.dayMode==="list"){
+      document.getElementById("scheduleShell").hidden = true;
+      document.getElementById("emptyStaff").hidden = true;
+      document.getElementById("dayAgenda").hidden = false;
+      renderAgenda();
+    } else {
+      document.getElementById("dayAgenda").hidden = true;
+      renderGrid();
+    }
+  }
+  function renderAgenda(){
+    var wrap = document.getElementById("dayAgenda");
+    var rows = state.bookings.slice().sort(function(a,b){ return a.startMin-b.startMin; });
+    if(rows.length===0){
+      wrap.innerHTML = '<div class="empty"><h3>На этот день записей нет</h3><p>Нажмите «+ Запись», чтобы добавить первую.</p></div>';
+      return;
+    }
+    wrap.innerHTML = '<div class="payroll-table">' + rows.map(function(b){
+      var staff = state.staff.find(function(s){ return s.id===b.staffId; });
+      return '<div class="payroll-row" style="cursor:pointer;" data-id="'+b.id+'">'+
+        '<span class="dot" style="background:'+(b.color||"#9C6F42")+'"></span>'+
+        '<div class="pname" style="flex:0 0 100px;min-width:100px;font-variant-numeric:tabular-nums;">'+minToHHMM(b.startMin)+'–'+minToHHMM(b.startMin+b.durationMin)+'</div>'+
+        '<div class="pname">'+statusPrefix(b.status)+escapeHtml(b.clientName||"Без имени")+'</div>'+
+        '<div class="pcount" style="width:auto;flex:1;text-align:left;color:var(--text);">'+escapeHtml(b.serviceName||"")+'</div>'+
+        '<div class="pcount" style="width:auto;">'+escapeHtml(staff?staff.name:"—")+'</div>'+
+      '</div>';
+    }).join("") + '</div>';
+    wrap.querySelectorAll("[data-id]").forEach(function(row){
+      row.addEventListener("click", function(){
+        openBookingModal(state.bookings.find(function(x){ return x.id===row.dataset.id; }));
+      });
+    });
+  }
+  function buildTimeColumn(){
+    var col = document.createElement("div"); col.className = "time-col";
+    var head = document.createElement("div"); head.className = "head-cell"; col.appendChild(head);
+    for(var m=WORK_START; m<WORK_END; m+=SLOT){
+      var slot = document.createElement("div");
+      slot.className = "time-slot" + (m%60===0 ? " hour" : "");
+      if(m%60===0) slot.setAttribute("data-h", minToHHMM(m));
+      col.appendChild(slot);
+    }
+    return col;
+  }
+  function statusPrefix(status){
+    if(status==="completed") return "✓ ";
+    if(status==="cancelled") return "✕ ";
+    if(status==="no_show") return "– ";
+    return "";
+  }
+  function buildStaffColumn(staffDoc){
+    var col = document.createElement("div"); col.className = "staff-col"; col.dataset.staffId = staffDoc.id;
+    var head = document.createElement("div"); head.className = "head-cell";
+    var countForDay = state.bookings.filter(function(b){ return b.staffId===staffDoc.id; }).length;
+    head.innerHTML = '<div><span class="dot" style="background:'+(staffDoc.color||"#9C6F42")+'"></span>'+
+      '<span class="name">'+escapeHtml(staffDoc.name)+'</span></div>'+
+      '<div class="count">'+countForDay+(countForDay===1?" запись":" записи")+'</div>';
+    col.appendChild(head);
+
+    var body = document.createElement("div"); body.className = "col-body";
+    var totalMin = WORK_END - WORK_START;
+    body.style.height = (totalMin/SLOT*ROW_PX) + "px";
+
+    for(var m=WORK_START; m<WORK_END; m+=60){
+      var hl = document.createElement("div"); hl.className = "hour-line";
+      hl.style.top = ((m-WORK_START)/SLOT*ROW_PX) + "px"; body.appendChild(hl);
+    }
+    if(sameDay(state.date, new Date())){
+      var now = new Date(); var nowMin = now.getHours()*60 + now.getMinutes();
+      var nl = document.createElement("div"); nl.className = "now-line";
+      nl.style.top = ((nowMin-WORK_START)/SLOT*ROW_PX) + "px"; body.appendChild(nl);
+    }
+    body.addEventListener("click", function(e){
+      var rect = body.getBoundingClientRect();
+      var y = e.clientY - rect.top;
+      var minutes = WORK_START + Math.round(y/ROW_PX)*SLOT;
+      minutes = Math.max(WORK_START, Math.min(WORK_END-SLOT, minutes));
+      openBookingModal({ staffId: staffDoc.id, startMin: minutes });
+    });
+    state.bookings.filter(function(b){ return b.staffId===staffDoc.id; }).forEach(function(b){
+      var block = document.createElement("div");
+      block.className = "booking status-"+(b.status||"scheduled");
+      var top = (b.startMin-WORK_START)/SLOT*ROW_PX;
+      var h = Math.max(22, b.durationMin/SLOT*ROW_PX - 2);
+      block.style.top = top+"px"; block.style.height = h+"px";
+      if(!b.status || b.status==="scheduled") block.style.background = b.color || "#9C6F42";
+      block.innerHTML = '<div class="client">'+statusPrefix(b.status)+escapeHtml(b.clientName||"Без имени")+'</div>'+
+        '<div class="svc">'+escapeHtml(b.serviceName||"")+'</div>'+
+        '<div class="time">'+minToHHMM(b.startMin)+'–'+minToHHMM(b.startMin+b.durationMin)+'</div>';
+      block.addEventListener("click", function(ev){ ev.stopPropagation(); openBookingModal(b); });
+      body.appendChild(block);
+    });
+    col.appendChild(body);
+    return col;
+  }
+  function renderGrid(){
+    var grid = document.getElementById("grid"); grid.innerHTML = "";
+    if(state.staff.length === 0){
+      document.getElementById("emptyStaff").hidden = false;
+      document.getElementById("scheduleShell").hidden = true;
+      return;
+    }
+    document.getElementById("emptyStaff").hidden = true;
+    document.getElementById("scheduleShell").hidden = false;
+    grid.appendChild(buildTimeColumn());
+    state.staff.forEach(function(s){ grid.appendChild(buildStaffColumn(s)); });
+
+    var scrollEl = document.querySelector("#scheduleShell .schedule-scroll");
+    if(scrollEl){
+      var anchorMin = sameDay(state.date, new Date()) ? (new Date().getHours()*60 + new Date().getMinutes()) : 8*60;
+      scrollEl.scrollTop = Math.max(0, (anchorMin - WORK_START - 60) / SLOT * ROW_PX);
+    }
+  }
+
+  // ---------- booking modal ----------
+  function fillSelectOptions(){
+    var sStaff = document.getElementById("fStaff");
+    sStaff.innerHTML = state.staff.map(function(s){ return '<option value="'+s.id+'">'+escapeHtml(s.name)+'</option>'; }).join("");
+    var sService = document.getElementById("fService");
+    sService.innerHTML = state.services.map(function(s){
+      return '<option value="'+s.id+'" data-dur="'+s.durationMin+'" data-color="'+s.color+'" data-name="'+escapeHtml(s.name)+'" data-price="'+(s.price||0)+'">'+escapeHtml(s.name)+' · '+s.durationMin+' мин</option>';
+    }).join("");
+  }
+  function setStatusPill(status){
+    state.editingStatus = status;
+    document.querySelectorAll("#statusPills .status-pill").forEach(function(p){ p.classList.toggle("active", p.dataset.status===status); });
+  }
+  function setPaymentPill(pay){
+    state.editingPaymentStatus = pay;
+    document.querySelectorAll("#paymentPills .status-pill").forEach(function(p){ p.classList.toggle("active", p.dataset.pay===pay); });
+  }
+  document.getElementById("statusPills").addEventListener("click", function(e){
+    var btn = e.target.closest(".status-pill"); if(!btn) return; setStatusPill(btn.dataset.status);
+  });
+  document.getElementById("paymentPills").addEventListener("click", function(e){
+    var btn = e.target.closest(".status-pill"); if(!btn) return; setPaymentPill(btn.dataset.pay);
+  });
+
+  function openBookingModal(prefill){
+    fillSelectOptions();
+    var isEdit = !!(prefill && prefill.id);
+    state.editingBookingId = isEdit ? prefill.id : null;
+    document.getElementById("bookingModalTitle").textContent = isEdit ? "Запись" : "Новая запись";
+    document.getElementById("bookingModalSub").textContent = fmtDateKey(state.date).split("-").reverse().join(".");
+    document.getElementById("btnDeleteBooking").hidden = !isEdit;
+    setStatusPill((prefill && prefill.status) || "scheduled");
+    setPaymentPill((prefill && prefill.paymentStatus) || "unpaid");
+
+    document.getElementById("fClient").value = (prefill && prefill.clientName) || "";
+    document.getElementById("fPhone").value = (prefill && prefill.clientPhone) || "";
+    document.getElementById("fNotes").value = (prefill && prefill.notes) || "";
+    document.getElementById("fPayMethod").value = (prefill && prefill.paymentMethod) || "cash";
+    document.getElementById("fPayLink").value = (prefill && prefill.paymentLink) || "";
+    if(prefill && prefill.staffId) document.getElementById("fStaff").value = prefill.staffId;
+    if(prefill && prefill.serviceId) document.getElementById("fService").value = prefill.serviceId;
+
+    var startMin = (prefill && typeof prefill.startMin === "number") ? prefill.startMin : 9*60;
+    document.getElementById("fStart").value = minToHHMM(startMin);
+
+    var svcOpt = document.getElementById("fService").selectedOptions[0];
+    var defaultDur = (prefill && prefill.durationMin) || (svcOpt ? +svcOpt.dataset.dur : 60);
+    document.getElementById("fDuration").value = defaultDur;
+    var defaultPrice = (prefill && typeof prefill.price === "number") ? prefill.price : (svcOpt ? +svcOpt.dataset.price : 0);
+    document.getElementById("fPrice").value = defaultPrice;
+
+    showOverlay("overlayBooking");
+  }
+  document.getElementById("fService").addEventListener("change", function(){
+    var opt = this.selectedOptions[0];
+    if(opt){ document.getElementById("fDuration").value = opt.dataset.dur; document.getElementById("fPrice").value = opt.dataset.price; }
+  });
+  function handleAddClick(){
+    if(state.currentView==="hotelBookings" || state.currentView==="rooms"){
+      if(state.hotelRooms.length===0){ toast("Сначала добавьте номер"); switchView("rooms"); return; }
+      openHotelBookingModal(null);
+      return;
+    }
+    if(state.staff.length===0){ toast("Сначала добавьте мастера"); switchView("staff"); return; }
+    if(state.services.length===0){ toast("Сначала добавьте услугу"); switchView("services"); return; }
+    openBookingModal({ staffId: state.staff[0].id, startMin: 9*60 });
+  }
+  document.getElementById("btnAdd").addEventListener("click", handleAddClick);
+  document.getElementById("btnAddMobile").addEventListener("click", handleAddClick);
+  document.getElementById("btnAddStaffEmpty").addEventListener("click", function(){ switchView("staff"); });
+
+  function upsertClientFromBooking(name, phone){
+    var digits = digitsOnly(phone);
+    if(digits.length < 7 || !db) return;
+    var ref = db.collection("clients").doc(digits);
+    ref.get().then(function(snap){
+      var now = Date.now();
+      if(snap.exists){
+        ref.update({ name: name || snap.data().name, phone: phone, updatedAt: now }).catch(function(){});
+      } else {
+        ref.set({ name: name || "", phone: phone, notes: "", createdAt: now, updatedAt: now }).catch(function(){});
+      }
+    }).catch(function(){});
+  }
+
+  document.getElementById("btnSaveBooking").addEventListener("click", function(){
+    var clientName = document.getElementById("fClient").value.trim();
+    if(!clientName){ toast("Укажите имя клиента"); return; }
+    var staffId = document.getElementById("fStaff").value;
+    var serviceSel = document.getElementById("fService");
+    var serviceOpt = serviceSel.selectedOptions[0];
+    var serviceId = serviceSel.value;
+    var serviceName = serviceOpt ? serviceOpt.dataset.name : "";
+    var color = serviceOpt ? serviceOpt.dataset.color : "#9C6F42";
+    var startMin = hhmmToMin(document.getElementById("fStart").value || "09:00");
+    var durationMin = Math.max(5, +document.getElementById("fDuration").value || 30);
+    var price = Math.max(0, +document.getElementById("fPrice").value || 0);
+    var notes = document.getElementById("fNotes").value.trim();
+    var phone = document.getElementById("fPhone").value.trim();
+    var status = state.editingStatus || "scheduled";
+    var paymentStatus = state.editingPaymentStatus || "unpaid";
+    var paymentMethod = document.getElementById("fPayMethod").value;
+    var paymentLink = document.getElementById("fPayLink").value.trim();
+
+    var data = {
+      date: fmtDateKey(state.date), staffId: staffId, serviceId: serviceId, serviceName: serviceName,
+      color: color, clientName: clientName, clientPhone: phone, startMin: startMin,
+      durationMin: durationMin, price: price, notes: notes, status: status,
+      paymentStatus: paymentStatus, paymentMethod: paymentMethod, paymentLink: paymentLink,
+      updatedAt: Date.now()
+    };
+    if(!db){ toast("Нет подключения к хранилищу"); return; }
+    var col = db.collection("bookings");
+    var done = function(msg){ toast(msg); hideOverlay("overlayBooking"); upsertClientFromBooking(clientName, phone); };
+    if(state.editingBookingId){
+      col.doc(state.editingBookingId).update(data).then(function(){ done("Запись обновлена"); }).catch(function(e){ toast("Ошибка: "+e.code); });
+    } else {
+      data.createdAt = Date.now();
+      col.add(data).then(function(){ done("Запись добавлена"); }).catch(function(e){ toast("Ошибка: "+e.code); });
+    }
+  });
+  document.getElementById("btnDeleteBooking").addEventListener("click", function(){
+    if(!state.editingBookingId || !db) return;
+    db.collection("bookings").doc(state.editingBookingId).delete().then(function(){
+      toast("Запись удалена"); hideOverlay("overlayBooking");
+    }).catch(function(e){ toast("Ошибка: "+e.code); });
+  });
+
+  // ================= MONTH VIEW =================
+  function monthBounds(d){
+    var start = new Date(d.getFullYear(), d.getMonth(), 1);
+    var end = new Date(d.getFullYear(), d.getMonth()+1, 0);
+    return { startKey: fmtDateKey(start), endKey: fmtDateKey(end), daysInMonth: end.getDate(), firstDow: (start.getDay()+6)%7 };
+  }
+  function renderMonthLabel(){ document.getElementById("monthLabel").textContent = MON_NOM[state.monthDate.getMonth()]+" "+state.monthDate.getFullYear(); }
+  function renderCalendar(){
+    var b = monthBounds(state.monthDate);
+    var counts = {};
+    state.monthBookings.forEach(function(bk){ counts[bk.date] = (counts[bk.date]||0)+1; });
+    var cal = document.getElementById("calGrid");
+    var html = DOW_SHORT.map(function(d){ return '<div class="cal-dow">'+d+'</div>'; }).join("");
+    for(var i=0;i<b.firstDow;i++) html += '<div class="cal-cell blank"></div>';
+    var todayKey = fmtDateKey(new Date());
+    for(var day=1; day<=b.daysInMonth; day++){
+      var dateObj = new Date(state.monthDate.getFullYear(), state.monthDate.getMonth(), day);
+      var key = fmtDateKey(dateObj);
+      var c = counts[key] || 0;
+      html += '<div class="cal-cell'+(key===todayKey?" today":"")+'" data-date="'+key+'">'+
+        '<div class="daynum">'+day+'</div>'+
+        (c>0 ? '<div class="pill">'+c+(c===1?" запись":" записи")+'</div>' : '')+
+      '</div>';
+    }
+    cal.innerHTML = html;
+    cal.querySelectorAll(".cal-cell[data-date]").forEach(function(cell){
+      cell.addEventListener("click", function(){
+        var p = cell.dataset.date.split("-");
+        state.date = new Date(+p[0], +p[1]-1, +p[2]);
+        renderDateLabel(); subscribeBookings();
+        switchView("day");
+      });
+    });
+  }
+  function subscribeMonth(){
+    if(!db) return;
+    if(unsub.month) unsub.month();
+    renderMonthLabel();
+    var b = monthBounds(state.monthDate);
+    unsub.month = db.collection("bookings").where("date",">=",b.startKey).where("date","<=",b.endKey).onSnapshot(function(snap){
+      state.monthBookings = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      renderCalendar();
+    }, function(err){ toast("Ошибка загрузки месяца: "+err.code); });
+  }
+  document.getElementById("btnMonthPrev").addEventListener("click", function(){
+    state.monthDate = new Date(state.monthDate.getFullYear(), state.monthDate.getMonth()-1, 1); subscribeMonth();
+  });
+  document.getElementById("btnMonthNext").addEventListener("click", function(){
+    state.monthDate = new Date(state.monthDate.getFullYear(), state.monthDate.getMonth()+1, 1); subscribeMonth();
+  });
+
+  // ================= CLIENTS =================
+  function subscribeClients(){
+    if(!db) return;
+    if(unsub.clients) return;
+    unsub.clients = db.collection("clients").onSnapshot(function(snap){
+      state.clients = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      renderClientList();
+    }, function(err){ toast("Ошибка загрузки клиентов: "+err.code); });
+  }
+  function renderClientList(){
+    var q = state.clientSearch.trim().toLowerCase();
+    var list = state.clients.filter(function(c){
+      if(!q) return true;
+      return (c.name||"").toLowerCase().indexOf(q)>-1 || (c.phone||"").indexOf(q)>-1;
+    }).sort(function(a,b){ return (a.name||"").localeCompare(b.name||"", "ru"); });
+    var wrap = document.getElementById("clientList");
+    document.getElementById("emptyClients").hidden = state.clients.length>0;
+    wrap.innerHTML = list.map(function(c){
+      var initial = (c.name||"?").trim().slice(0,1).toUpperCase() || "?";
+      return '<div class="client-row" data-id="'+c.id+'">'+
+        '<div class="avatar">'+initial+'</div>'+
+        '<div class="meta"><div class="n">'+escapeHtml(c.name||"Без имени")+'</div><div class="p">'+escapeHtml(c.phone||"")+'</div></div>'+
+        '<div class="chev">›</div>'+
+      '</div>';
+    }).join("");
+    wrap.querySelectorAll(".client-row").forEach(function(row){
+      row.addEventListener("click", function(){ openClientModal(state.clients.find(function(c){ return c.id===row.dataset.id; })); });
+    });
+  }
+  document.getElementById("clientSearch").addEventListener("input", function(e){ state.clientSearch = e.target.value; renderClientList(); });
+  document.getElementById("btnAddClient").addEventListener("click", function(){ openClientModal(null); });
+
+  function openClientModal(client){
+    state.editingClientId = client ? client.id : null;
+    document.getElementById("clientModalTitle").textContent = client ? (client.name || "Клиент") : "Новый клиент";
+    document.getElementById("cfName").value = client ? (client.name||"") : "";
+    document.getElementById("cfPhone").value = client ? (client.phone||"") : "";
+    document.getElementById("cfNotes").value = client ? (client.notes||"") : "";
+    document.getElementById("btnDeleteClient").hidden = !client;
+    document.getElementById("clientDeleteConfirm").hidden = true;
+    document.getElementById("clientStats").innerHTML = "";
+    document.getElementById("clientHistory").innerHTML = "";
+    showOverlay("overlayClient");
+    if(client && client.phone && db){
+      Promise.all([
+        db.collection("bookings").where("clientPhone","==",client.phone).get(),
+        db.collection("hotel_bookings").where("clientPhone","==",client.phone).get()
+      ]).then(function(results){
+        var spaRows = results[0].docs.map(function(d){
+          var r = d.data();
+          return {
+            sortKey: r.date+pad(Math.floor(r.startMin/60))+pad(r.startMin%60),
+            label: r.serviceName || "Услуга",
+            dateLabel: (r.date||"").split("-").reverse().join("."),
+            status: r.status, statusLabel: STATUS_LABELS[r.status]||"Запланирована",
+            paymentStatus: r.paymentStatus, price: r.price, color: r.color||"#9C6F42",
+            done: r.status==="completed"
+          };
+        });
+        var hotelRows = results[1].docs.map(function(d){
+          var r = d.data();
+          return {
+            sortKey: (r.checkIn||"")+"99",
+            label: "Номер № "+(r.roomNumber||"—"),
+            dateLabel: (r.checkIn?r.checkIn.split("-").reverse().join("."):"—")+" — "+(r.checkOut?r.checkOut.split("-").reverse().join("."):"—"),
+            status: r.status, statusLabel: HOTEL_STATUS_LABELS[r.status]||"Забронирован",
+            paymentStatus: r.paymentStatus, price: r.price, color: "#5B6B7A",
+            done: r.status==="checked_out"
+          };
+        });
+        var rows = spaRows.concat(hotelRows).sort(function(a,b){ return b.sortKey.localeCompare(a.sortKey); });
+        var totalSpent = rows.filter(function(r){ return r.paymentStatus==="paid"; }).reduce(function(s,r){ return s+(r.price||0); }, 0);
+        var lastVisit = rows.length ? rows[0].dateLabel : "—";
+        document.getElementById("clientStats").innerHTML =
+          '<div class="stat-tile"><div class="v">'+rows.length+'</div><div class="l">визитов всего (спа + отель)</div></div>'+
+          '<div class="stat-tile"><div class="v">'+fmtMoney(totalSpent)+'</div><div class="l">сум оплачено всего</div></div>'+
+          '<div class="stat-tile"><div class="v">'+lastVisit+'</div><div class="l">последний визит</div></div>';
+        document.getElementById("clientHistory").innerHTML = rows.slice(0,30).map(function(r){
+          return '<div class="history-row"><span class="dot" style="background:'+r.color+'"></span>'+
+            '<div class="hmeta"><div class="hsvc">'+escapeHtml(r.label)+'</div>'+
+            '<div class="hdate">'+r.dateLabel+' · '+r.statusLabel+(r.paymentStatus==="paid"?" · оплачено":"")+'</div></div>'+
+            '<div class="hprice">'+(r.price?fmtMoney(r.price)+" сум":"")+'</div></div>';
+        }).join("") || '<div class="hint">История визитов пуста</div>';
+      });
+    }
+  }
+  document.getElementById("btnSaveClient").addEventListener("click", function(){
+    var name = document.getElementById("cfName").value.trim();
+    var phone = document.getElementById("cfPhone").value.trim();
+    var notes = document.getElementById("cfNotes").value.trim();
+    if(!name && !phone){ toast("Укажите имя или телефон"); return; }
+    if(!db) return;
+    var id = state.editingClientId || digitsOnly(phone) || ("c"+Date.now());
+    db.collection("clients").doc(id).set({ name: name, phone: phone, notes: notes, createdAt: Date.now(), updatedAt: Date.now() })
+      .then(function(){ toast("Клиент сохранён"); hideOverlay("overlayClient"); })
+      .catch(function(e){ toast("Ошибка: "+e.code); });
+  });
+  document.getElementById("btnDeleteClient").addEventListener("click", function(){ document.getElementById("clientDeleteConfirm").hidden = false; });
+  document.querySelector("[data-cancel-delete]").addEventListener("click", function(){ document.getElementById("clientDeleteConfirm").hidden = true; });
+  document.getElementById("btnConfirmDeleteClient").addEventListener("click", function(){
+    if(!state.editingClientId || !db) return;
+    db.collection("clients").doc(state.editingClientId).delete().then(function(){
+      toast("Клиент удалён"); hideOverlay("overlayClient");
+    }).catch(function(e){ toast("Ошибка: "+e.code); });
+  });
+
+  // ================= INVENTORY =================
+  function subscribeInventory(){
+    if(!db) return;
+    if(unsub.inventory) return;
+    var unsubItems = db.collection("inventory").orderBy("order","asc").onSnapshot(function(snap){
+      state.inventoryItems = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      renderInventory();
+    });
+    var unsubMoves = db.collection("stock_moves").limit(1000).onSnapshot(function(snap){
+      state.stockMoves = snap.docs.map(function(d){ return d.data(); });
+      renderInventory();
+    });
+    unsub.inventory = function(){ unsubItems(); unsubMoves(); };
+  }
+  function currentStock(itemId){
+    return state.stockMoves.filter(function(m){ return m.itemId===itemId; }).reduce(function(s,m){ return s+(m.delta||0); }, 0);
+  }
+  function renderInventory(){
+    document.getElementById("emptyInventory").hidden = state.inventoryItems.length>0;
+    var wrap = document.getElementById("inventoryList");
+    wrap.innerHTML = state.inventoryItems.map(function(it){
+      var stock = currentStock(it.id);
+      var low = stock <= (it.reorderAt||0);
+      return '<div class="stock-row" data-id="'+it.id+'">'+
+        '<div class="meta"><div class="n">'+escapeHtml(it.name)+'</div><div class="d">мин. остаток: '+(it.reorderAt||0)+' '+escapeHtml(it.unit||"")+'</div></div>'+
+        '<div class="stock-badge'+(low?" low":"")+'">'+stock+' '+escapeHtml(it.unit||"")+'</div>'+
+        '<div class="stock-actions">'+
+          '<button class="btn btn-sm" data-move="in" data-id="'+it.id+'">+ Приход</button>'+
+          '<button class="btn btn-sm" data-move="out" data-id="'+it.id+'">− Расход</button>'+
+          '<button class="btn btn-icon btn-ghost" data-del-inv="'+it.id+'">✕</button>'+
+        '</div></div>';
+    }).join("");
+    wrap.querySelectorAll("[data-move]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var item = state.inventoryItems.find(function(x){ return x.id===btn.dataset.id; });
+        openStockMoveModal(item, btn.dataset.move);
+      });
+    });
+    wrap.querySelectorAll("[data-del-inv]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if(!db) return;
+        db.collection("inventory").doc(btn.dataset.delInv).delete().then(function(){ toast("Позиция удалена"); });
+      });
+    });
+  }
+  document.getElementById("btnAddInventory").addEventListener("click", function(){
+    var f = document.getElementById("inventoryAddForm"); f.hidden = !f.hidden;
+  });
+  document.getElementById("btnSaveInventory").addEventListener("click", function(){
+    var name = document.getElementById("newInvName").value.trim();
+    if(!name){ toast("Введите название"); return; }
+    var unit = document.getElementById("newInvUnit").value.trim() || "шт";
+    var reorderAt = +document.getElementById("newInvReorder").value || 0;
+    if(!db) return;
+    db.collection("inventory").add({ name:name, unit:unit, reorderAt:reorderAt, order:Date.now() }).then(function(){
+      toast("Позиция добавлена");
+      document.getElementById("newInvName").value="";
+      document.getElementById("newInvReorder").value=5;
+      document.getElementById("inventoryAddForm").hidden = true;
+    });
+  });
+  function openStockMoveModal(item, direction){
+    state.editingStockItem = item; state.stockDirection = direction;
+    document.getElementById("stockMoveTitle").textContent = direction==="in" ? "Приход" : "Расход";
+    document.getElementById("stockMoveSub").textContent = item.name + " · остаток: " + currentStock(item.id) + " " + (item.unit||"");
+    document.getElementById("smQty").value = "";
+    document.getElementById("smReason").value = "";
+    showOverlay("overlayStockMove");
+  }
+  document.getElementById("btnSaveStockMove").addEventListener("click", function(){
+    var qty = +document.getElementById("smQty").value;
+    if(!qty || qty<=0){ toast("Укажите количество"); return; }
+    if(!db || !state.editingStockItem) return;
+    var delta = state.stockDirection==="in" ? qty : -qty;
+    var reason = document.getElementById("smReason").value.trim();
+    db.collection("stock_moves").add({
+      itemId: state.editingStockItem.id, itemName: state.editingStockItem.name,
+      delta: delta, reason: reason, createdAt: Date.now()
+    }).then(function(){ toast("Движение сохранено"); hideOverlay("overlayStockMove"); })
+      .catch(function(e){ toast("Ошибка: "+e.code); });
+  });
+
+  // ================= PAYROLL =================
+  function subscribePayroll(){
+    if(!db) return;
+    if(!state.payrollFrom || !state.payrollTo){
+      var b = monthBounds(new Date());
+      state.payrollFrom = b.startKey; state.payrollTo = b.endKey;
+    }
+    document.getElementById("payrollFrom").value = state.payrollFrom;
+    document.getElementById("payrollTo").value = state.payrollTo;
+    runPayrollQuery();
+  }
+  function runPayrollQuery(){
+    if(!db) return;
+    if(unsub.payroll) unsub.payroll();
+    unsub.payroll = db.collection("bookings").where("date",">=",state.payrollFrom).where("date","<=",state.payrollTo).onSnapshot(function(snap){
+      state.payrollBookings = snap.docs.map(function(d){ return d.data(); });
+      renderPayroll();
+    }, function(err){ toast("Ошибка загрузки: "+err.code); });
+  }
+  document.getElementById("payrollFrom").addEventListener("change", function(e){ state.payrollFrom = e.target.value; runPayrollQuery(); });
+  document.getElementById("payrollTo").addEventListener("change", function(e){ state.payrollTo = e.target.value; runPayrollQuery(); });
+  document.getElementById("btnPayrollMonth").addEventListener("click", function(){
+    var b = monthBounds(new Date());
+    state.payrollFrom = b.startKey; state.payrollTo = b.endKey;
+    document.getElementById("payrollFrom").value = state.payrollFrom;
+    document.getElementById("payrollTo").value = state.payrollTo;
+    runPayrollQuery();
+  });
+  function renderPayroll(){
+    var completed = state.payrollBookings.filter(function(b){ return b.status==="completed"; });
+    var byStaff = {};
+    completed.forEach(function(b){
+      if(!byStaff[b.staffId]) byStaff[b.staffId] = { count:0, revenue:0 };
+      byStaff[b.staffId].count++; byStaff[b.staffId].revenue += (b.price||0);
+    });
+    var totalRevenue = 0, totalCommission = 0;
+    var rows = state.staff.map(function(s){
+      var d = byStaff[s.id] || { count:0, revenue:0 };
+      var pct = s.commissionPercent || 0;
+      var commission = d.revenue * pct / 100;
+      totalRevenue += d.revenue; totalCommission += commission;
+      return '<div class="payroll-row"><span class="dot" style="background:'+s.color+'"></span>'+
+        '<div class="pname">'+escapeHtml(s.name)+' ('+pct+'%)</div>'+
+        '<div class="pcount">'+d.count+' зап.</div>'+
+        '<div class="prevenue">'+fmtMoney(d.revenue)+'</div>'+
+        '<div class="pcommission">'+fmtMoney(commission)+'</div></div>';
+    }).join("") || '<div class="hint" style="padding:16px;">Добавьте мастеров в разделе «Мастера»</div>';
+    rows += '<div class="payroll-row total"><span class="dot" style="background:transparent"></span>'+
+      '<div class="pname">Итого</div><div class="pcount"></div>'+
+      '<div class="prevenue">'+fmtMoney(totalRevenue)+'</div>'+
+      '<div class="pcommission">'+fmtMoney(totalCommission)+'</div></div>';
+    document.getElementById("payrollTable").innerHTML = rows;
+  }
+
+  // ================= STATS =================
+  function subscribeStats(){
+    if(!db) return;
+    if(unsub.stats) return;
+    var now = new Date();
+    var b = monthBounds(now);
+    unsub.stats = db.collection("bookings").where("date",">=",b.startKey).where("date","<=",b.endKey).onSnapshot(function(snap){
+      state.statsBookings = snap.docs.map(function(d){ return d.data(); });
+      renderStats();
+    }, function(err){ toast("Ошибка загрузки статистики: "+err.code); });
+  }
+  function topList(items, keyField, nameMap){
+    var tally = {};
+    items.forEach(function(b){ var k = b[keyField]; if(!k) return; tally[k] = (tally[k]||0) + 1; });
+    var arr = Object.keys(tally).map(function(k){ return { name: nameMap(k), count: tally[k] }; })
+      .sort(function(a,b){ return b.count-a.count; }).slice(0,6);
+    var max = arr.length ? arr[0].count : 1;
+    return arr.map(function(r){
+      return '<div class="rank-row"><div class="rn">'+escapeHtml(r.name)+'</div>'+
+        '<div class="bar-track"><div class="bar-fill" style="width:'+(r.count/max*100)+'%"></div></div>'+
+        '<div class="rv">'+r.count+'</div></div>';
+    }).join("") || '<div class="hint">Нет данных за этот месяц</div>';
+  }
+  function renderStats(){
+    var todayKey = fmtDateKey(new Date());
+    var all = state.statsBookings;
+    var today = all.filter(function(b){ return b.date===todayKey; });
+    var completed = all.filter(function(b){ return b.status==="completed"; });
+    var cancelled = all.filter(function(b){ return b.status==="cancelled" || b.status==="no_show"; });
+    var paid = completed.filter(function(b){ return b.paymentStatus==="paid"; });
+    var unpaidCompleted = completed.filter(function(b){ return b.paymentStatus!=="paid"; });
+    var paidRevenue = paid.reduce(function(s,b){ return s+(b.price||0); }, 0);
+
+    document.getElementById("statTiles").innerHTML =
+      '<div class="stat-tile"><div class="v">'+today.length+'</div><div class="l">записей сегодня</div></div>'+
+      '<div class="stat-tile"><div class="v">'+all.length+'</div><div class="l">записей в этом месяце</div></div>'+
+      '<div class="stat-tile"><div class="v">'+fmtMoney(paidRevenue)+'</div><div class="l">сум получено оплат</div></div>'+
+      '<div class="stat-tile"><div class="v">'+unpaidCompleted.length+'</div><div class="l">завершено, но не оплачено</div></div>'+
+      '<div class="stat-tile"><div class="v">'+cancelled.length+'</div><div class="l">отмен и неявок</div></div>';
+
+    document.getElementById("rankServices").innerHTML = topList(completed, "serviceId", function(id){
+      var s = state.services.find(function(x){ return x.id===id; }); return s ? s.name : "—";
+    });
+    document.getElementById("rankStaff").innerHTML = topList(completed, "staffId", function(id){
+      var s = state.staff.find(function(x){ return x.id===id; }); return s ? s.name : "—";
+    });
+    document.getElementById("rankPayments").innerHTML = topList(paid, "paymentMethod", function(m){
+      return PAYMENT_LABELS[m] || m;
+    });
+  }
+
+  // ================= STAFF & SERVICES (own sections) =================
+  function swatchesHtml(selected, groupId){
+    return '<div class="swatches" data-group="'+groupId+'">' + PALETTE.map(function(c){
+      return '<div class="swatch'+(c===selected?" active":"")+'" data-color="'+c+'" style="background:'+c+'"></div>';
+    }).join("") + '</div>';
+  }
+  function bindSwatchGroup(container){
+    container.querySelectorAll(".swatch").forEach(function(sw){
+      sw.addEventListener("click", function(){
+        container.querySelectorAll(".swatch").forEach(function(s){ s.classList.remove("active"); });
+        sw.classList.add("active");
+      });
+    });
+  }
+  function renderStaffTab(){
+    var wrap = document.getElementById("tabStaff");
+    var html = state.staff.map(function(s){
+      return '<div class="list-item" data-id="'+s.id+'"><span class="dot" style="background:'+s.color+'"></span>'+
+        '<div class="meta"><div class="n">'+escapeHtml(s.name)+'</div><div class="d">Комиссия: '+(s.commissionPercent||0)+'%</div></div>'+
+        '<input type="number" class="commission-input" min="0" max="100" value="'+(s.commissionPercent||0)+'" data-commission="'+s.id+'">'+
+        '<button class="btn btn-icon btn-ghost" data-del-staff="'+s.id+'">✕</button></div>';
+    }).join("") || '<div class="hint" style="margin-bottom:10px;text-align:left;">Мастеров пока нет — добавьте первого ниже.</div>';
+    html += '<div class="add-form">'+
+      '<div class="field"><label>Имя мастера</label><input type="text" id="newStaffName" placeholder="Например, Мадина"></div>'+
+      '<div class="field"><label>Комиссия от выручки, %</label><input type="number" id="newStaffCommission" min="0" max="100" value="30"></div>'+
+      '<div class="field"><label>Цвет</label>'+swatchesHtml(PALETTE[state.staff.length%PALETTE.length], "staff")+'</div>'+
+      '<button class="btn btn-primary" id="btnAddStaff" style="width:100%;justify-content:center;">+ Добавить мастера</button></div>';
+    wrap.innerHTML = html;
+    bindSwatchGroup(wrap.querySelector('[data-group="staff"]'));
+    wrap.querySelectorAll("[data-del-staff]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if(!db) return;
+        db.collection("staff").doc(btn.dataset.delStaff).delete().then(function(){ toast("Мастер удалён"); });
+      });
+    });
+    wrap.querySelectorAll("[data-commission]").forEach(function(inp){
+      inp.addEventListener("change", function(){
+        if(!db) return;
+        db.collection("staff").doc(inp.dataset.commission).update({ commissionPercent: +inp.value || 0 }).then(function(){ toast("Комиссия обновлена"); });
+      });
+    });
+    document.getElementById("btnAddStaff").addEventListener("click", function(){
+      var name = document.getElementById("newStaffName").value.trim();
+      if(!name){ toast("Введите имя"); return; }
+      var commissionPercent = +document.getElementById("newStaffCommission").value || 0;
+      var color = wrap.querySelector('[data-group="staff"] .swatch.active').dataset.color;
+      db.collection("staff").add({ name: name, color: color, commissionPercent: commissionPercent, order: Date.now() }).then(function(){ toast("Мастер добавлен"); });
+    });
+  }
+  function renderServicesTab(){
+    var wrap = document.getElementById("tabServices");
+    var html = state.services.map(function(s){
+      return '<div class="list-item" data-id="'+s.id+'"><span class="dot" style="background:'+s.color+'"></span>'+
+        '<div class="meta"><div class="n">'+escapeHtml(s.name)+'</div><div class="d">'+s.durationMin+' мин'+(s.price?(' · '+fmtMoney(s.price)+' сум'):'')+'</div></div>'+
+        '<button class="btn btn-icon btn-ghost" data-del-service="'+s.id+'">✕</button></div>';
+    }).join("") || '<div class="hint" style="margin-bottom:10px;text-align:left;">Услуг пока нет — добавьте первую ниже.</div>';
+    html += '<div class="add-form">'+
+      '<div class="field"><label>Название услуги</label><input type="text" id="newSvcName" placeholder="Например, Массаж спины"></div>'+
+      '<div class="row2">'+
+        '<div class="field"><label>Длительность, мин</label><input type="number" id="newSvcDur" value="60" min="5" step="5"></div>'+
+        '<div class="field"><label>Цена, сум</label><input type="number" id="newSvcPrice" min="0" step="1000"></div>'+
+      '</div>'+
+      '<div class="field"><label>Цвет</label>'+swatchesHtml(PALETTE[state.services.length%PALETTE.length], "svc")+'</div>'+
+      '<button class="btn btn-primary" id="btnAddService" style="width:100%;justify-content:center;">+ Добавить услугу</button></div>';
+    wrap.innerHTML = html;
+    bindSwatchGroup(wrap.querySelector('[data-group="svc"]'));
+    wrap.querySelectorAll("[data-del-service]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if(!db) return;
+        db.collection("services").doc(btn.dataset.delService).delete().then(function(){ toast("Услуга удалена"); });
+      });
+    });
+    document.getElementById("btnAddService").addEventListener("click", function(){
+      var name = document.getElementById("newSvcName").value.trim();
+      if(!name){ toast("Введите название"); return; }
+      var dur = Math.max(5, +document.getElementById("newSvcDur").value || 60);
+      var price = +document.getElementById("newSvcPrice").value || 0;
+      var color = wrap.querySelector('[data-group="svc"] .swatch.active').dataset.color;
+      db.collection("services").add({ name: name, durationMin: dur, price: price, color: color, order: Date.now() }).then(function(){ toast("Услуга добавлена"); });
+    });
+  }
+
+  // ================= HOTEL: ROOMS =================
+  function renderRoomsTab(){
+    var wrap = document.getElementById("tabRooms");
+    if(!wrap) return;
+    var html = state.hotelRooms.map(function(r){
+      return '<div class="list-item" data-id="'+r.id+'"><span class="dot" style="background:#5B6B7A"></span>'+
+        '<div class="meta"><div class="n">№ '+escapeHtml(r.number)+'</div><div class="d">'+escapeHtml(r.type||"")+(r.price?(' · '+fmtMoney(r.price)+' сум/ночь'):'')+'</div></div>'+
+        '<button class="btn btn-icon btn-ghost" data-del-room="'+r.id+'">✕</button></div>';
+    }).join("") || '<div class="hint" style="margin-bottom:10px;text-align:left;">Номеров пока нет — добавьте первый ниже.</div>';
+    html += '<div class="add-form">'+
+      '<div class="field"><label>Номер комнаты</label><input type="text" id="newRoomNumber" placeholder="Например, 101"></div>'+
+      '<div class="row2">'+
+        '<div class="field"><label>Категория</label><input type="text" id="newRoomType" placeholder="Стандарт, Делюкс..."></div>'+
+        '<div class="field"><label>Цена за ночь, сум</label><input type="number" id="newRoomPrice" min="0" step="10000"></div>'+
+      '</div>'+
+      '<button class="btn btn-primary" id="btnAddRoom" style="width:100%;justify-content:center;">+ Добавить номер</button></div>';
+    wrap.innerHTML = html;
+    wrap.querySelectorAll("[data-del-room]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if(!db) return;
+        db.collection("rooms").doc(btn.dataset.delRoom).delete().then(function(){ toast("Номер удалён"); });
+      });
+    });
+    var btnAddRoom = document.getElementById("btnAddRoom");
+    if(btnAddRoom) btnAddRoom.addEventListener("click", function(){
+      var number = document.getElementById("newRoomNumber").value.trim();
+      if(!number){ toast("Введите номер комнаты"); return; }
+      var type = document.getElementById("newRoomType").value.trim();
+      var price = +document.getElementById("newRoomPrice").value || 0;
+      if(!db) return;
+      db.collection("rooms").add({ number:number, type:type, price:price, order:Date.now() }).then(function(){ toast("Номер добавлен"); });
+    });
+  }
+
+  // ================= HOTEL: BOOKINGS =================
+  function fillRoomSelectOptions(){
+    var sel = document.getElementById("hRoom");
+    sel.innerHTML = state.hotelRooms.map(function(r){
+      return '<option value="'+r.id+'" data-number="'+escapeHtml(r.number)+'" data-price="'+(r.price||0)+'">№ '+escapeHtml(r.number)+(r.type?(' · '+escapeHtml(r.type)):'')+'</option>';
+    }).join("");
+  }
+  function setHotelStatusPill(status){
+    state.editingHotelStatus = status;
+    document.querySelectorAll("#hotelStatusPills .status-pill").forEach(function(p){ p.classList.toggle("active", p.dataset.hstatus===status); });
+  }
+  function setHotelPaymentPill(pay){
+    state.editingHotelPaymentStatus = pay;
+    document.querySelectorAll("#hotelPaymentPills .status-pill").forEach(function(p){ p.classList.toggle("active", p.dataset.pay===pay); });
+  }
+  document.getElementById("hotelStatusPills").addEventListener("click", function(e){
+    var btn = e.target.closest(".status-pill"); if(!btn) return; setHotelStatusPill(btn.dataset.hstatus);
+  });
+  document.getElementById("hotelPaymentPills").addEventListener("click", function(e){
+    var btn = e.target.closest(".status-pill"); if(!btn) return; setHotelPaymentPill(btn.dataset.pay);
+  });
+
+  function openHotelBookingModal(prefill){
+    fillRoomSelectOptions();
+    var isEdit = !!(prefill && prefill.id);
+    state.editingHotelBookingId = isEdit ? prefill.id : null;
+    document.getElementById("hotelModalTitle").textContent = isEdit ? "Бронирование" : "Новое бронирование";
+    document.getElementById("hotelModalSub").textContent = "Номер отеля";
+    document.getElementById("btnDeleteHotelBooking").hidden = !isEdit;
+    setHotelStatusPill((prefill && prefill.status) || "booked");
+    setHotelPaymentPill((prefill && prefill.paymentStatus) || "unpaid");
+
+    document.getElementById("hClient").value = (prefill && prefill.clientName) || "";
+    document.getElementById("hPhone").value = (prefill && prefill.clientPhone) || "";
+    document.getElementById("hNotes").value = (prefill && prefill.notes) || "";
+    document.getElementById("hCheckIn").value = (prefill && prefill.checkIn) || fmtDateKey(new Date());
+    var defaultOut = new Date(); defaultOut.setDate(defaultOut.getDate()+1);
+    document.getElementById("hCheckOut").value = (prefill && prefill.checkOut) || fmtDateKey(defaultOut);
+    if(prefill && prefill.roomId) document.getElementById("hRoom").value = prefill.roomId;
+
+    var roomOpt = document.getElementById("hRoom").selectedOptions[0];
+    document.getElementById("hPrice").value = (prefill && typeof prefill.price==="number") ? prefill.price : (roomOpt ? +roomOpt.dataset.price : 0);
+
+    showOverlay("overlayHotelBooking");
+  }
+  document.getElementById("hRoom").addEventListener("change", function(){
+    var opt = this.selectedOptions[0];
+    if(opt) document.getElementById("hPrice").value = opt.dataset.price;
+  });
+  document.getElementById("btnSaveHotelBooking").addEventListener("click", function(){
+    var clientName = document.getElementById("hClient").value.trim();
+    if(!clientName){ toast("Укажите имя гостя"); return; }
+    var roomSel = document.getElementById("hRoom");
+    var roomOpt = roomSel.selectedOptions[0];
+    var roomId = roomSel.value;
+    var roomNumber = roomOpt ? roomOpt.dataset.number : "";
+    var checkIn = document.getElementById("hCheckIn").value;
+    var checkOut = document.getElementById("hCheckOut").value;
+    if(!checkIn || !checkOut){ toast("Укажите даты заезда и выезда"); return; }
+    if(checkOut <= checkIn){ toast("Выезд должен быть позже заезда"); return; }
+    var price = Math.max(0, +document.getElementById("hPrice").value || 0);
+    var notes = document.getElementById("hNotes").value.trim();
+    var phone = document.getElementById("hPhone").value.trim();
+    var status = state.editingHotelStatus || "booked";
+    var paymentStatus = state.editingHotelPaymentStatus || "unpaid";
+
+    var data = {
+      roomId: roomId, roomNumber: roomNumber, clientName: clientName, clientPhone: phone,
+      checkIn: checkIn, checkOut: checkOut, price: price, notes: notes, status: status,
+      paymentStatus: paymentStatus, updatedAt: Date.now()
+    };
+    if(!db){ toast("Нет подключения к хранилищу"); return; }
+    var col = db.collection("hotel_bookings");
+    var done = function(msg){ toast(msg); hideOverlay("overlayHotelBooking"); upsertClientFromBooking(clientName, phone); };
+    if(state.editingHotelBookingId){
+      col.doc(state.editingHotelBookingId).update(data).then(function(){ done("Бронирование обновлено"); }).catch(function(e){ toast("Ошибка: "+e.code); });
+    } else {
+      data.createdAt = Date.now();
+      col.add(data).then(function(){ done("Бронирование добавлено"); }).catch(function(e){ toast("Ошибка: "+e.code); });
+    }
+  });
+  document.getElementById("btnDeleteHotelBooking").addEventListener("click", function(){
+    if(!state.editingHotelBookingId || !db) return;
+    db.collection("hotel_bookings").doc(state.editingHotelBookingId).delete().then(function(){
+      toast("Бронирование удалено"); hideOverlay("overlayHotelBooking");
+    }).catch(function(e){ toast("Ошибка: "+e.code); });
+  });
+
+  function hotelStatusColor(status){
+    if(status==="checked_in") return {bg:"var(--ok-soft)", fg:"var(--ok)"};
+    if(status==="checked_out") return {bg:"var(--border)", fg:"var(--text)"};
+    if(status==="cancelled") return {bg:"var(--danger-soft)", fg:"var(--danger)"};
+    return {bg:"var(--accent-soft)", fg:"var(--accent)"};
+  }
+  function renderHotelBookingList(){
+    var emptyEl = document.getElementById("emptyHotelBookings");
+    if(emptyEl) emptyEl.hidden = state.hotelBookings.length>0;
+    var rows = state.hotelBookings.slice().sort(function(a,b){ return (b.checkIn||"").localeCompare(a.checkIn||""); });
+    var wrap = document.getElementById("hotelBookingList");
+    if(!wrap) return;
+    wrap.innerHTML = rows.map(function(b){
+      var c = hotelStatusColor(b.status);
+      var room = state.hotelRooms.find(function(r){ return r.id===b.roomId; });
+      return '<div class="payroll-row" style="cursor:pointer;" data-id="'+b.id+'">'+
+        '<div class="pname" style="flex:0 0 80px;min-width:80px;">№ '+escapeHtml(room?room.number:(b.roomNumber||"—"))+'</div>'+
+        '<div class="pname">'+escapeHtml(b.clientName||"Без имени")+'</div>'+
+        '<div class="pcount" style="width:auto;flex:1;text-align:left;color:var(--text);">'+(b.checkIn?b.checkIn.split("-").reverse().join("."):"—")+' — '+(b.checkOut?b.checkOut.split("-").reverse().join("."):"—")+'</div>'+
+        '<span style="background:'+c.bg+';color:'+c.fg+';font-size:12px;font-weight:700;padding:4px 11px;border-radius:999px;white-space:nowrap;">'+(HOTEL_STATUS_LABELS[b.status]||"Забронирован")+'</span>'+
+      '</div>';
+    }).join("");
+    wrap.querySelectorAll("[data-id]").forEach(function(row){
+      row.addEventListener("click", function(){
+        openHotelBookingModal(state.hotelBookings.find(function(x){ return x.id===row.dataset.id; }));
+      });
+    });
+  }
+  function subscribeHotelBookings(){
+    if(!db) return;
+    if(unsub.hotelBookings) return;
+    unsub.hotelBookings = db.collection("hotel_bookings").limit(500).onSnapshot(function(snap){
+      state.hotelBookings = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      renderHotelBookingList();
+    }, function(err){ toast("Ошибка загрузки бронирований: "+err.code); });
+  }
+
+  // ================= DATE NAV (day) =================
+  function setDate(d){ state.date = d; renderDateLabel(); subscribeBookings(); }
+  document.getElementById("btnPrev").addEventListener("click", function(){ var d=new Date(state.date); d.setDate(d.getDate()-1); setDate(d); });
+  document.getElementById("btnNext").addEventListener("click", function(){ var d=new Date(state.date); d.setDate(d.getDate()+1); setDate(d); });
+  document.getElementById("btnToday").addEventListener("click", function(){ setDate(new Date()); });
+  document.getElementById("datePick").addEventListener("change", function(e){
+    if(!e.target.value) return;
+    var p = e.target.value.split("-"); setDate(new Date(+p[0], +p[1]-1, +p[2]));
+  });
+
+  function subscribeBookings(){
+    if(!db) return;
+    if(unsub.bookings) unsub.bookings();
+    var dateKey = fmtDateKey(state.date);
+    unsub.bookings = db.collection("bookings").where("date","==",dateKey).onSnapshot(function(snap){
+      state.bookings = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+      renderDayView();
+    }, function(err){
+      document.getElementById("loadingHint").hidden = false;
+      document.getElementById("loadingHint").textContent = "Не удалось загрузить записи: "+err.code;
+    });
+  }
+
+  function init(){
+    renderDateLabel();
+    if(!window.claude || !window.claude.use){
+      document.getElementById("loadingHint").textContent = "Эта страница работает только во вьюере Claude.";
+      return;
+    }
+    window.claude.use("db").then(function(d){
+      db = d;
+      if(!db){ document.getElementById("loadingHint").textContent = "Нет доступа к хранилищу данных на этом просмотре."; return; }
+      document.getElementById("loadingHint").hidden = true;
+      db.collection("staff").orderBy("order","asc").onSnapshot(function(snap){
+        state.staff = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+        renderDayView();
+        renderStaffTab();
+      });
+      db.collection("services").orderBy("order","asc").onSnapshot(function(snap){
+        state.services = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+        renderServicesTab();
+      });
+      db.collection("rooms").orderBy("order","asc").onSnapshot(function(snap){
+        state.hotelRooms = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+        renderRoomsTab();
+      });
+      subscribeBookings();
+    });
+  }
+  init();
+})();
+</script>
+
+</body></html>
